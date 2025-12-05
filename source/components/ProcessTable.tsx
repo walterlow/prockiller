@@ -38,9 +38,11 @@ export function ProcessTable({ processes, selectedIndex, onSelect, onKill }: Pro
 
   useInput((input, key) => {
     if (key.upArrow) {
-      onSelect(Math.max(0, selectedIndex - 1));
+      // Loop to end when at the beginning
+      onSelect(selectedIndex === 0 ? processes.length - 1 : selectedIndex - 1);
     } else if (key.downArrow) {
-      onSelect(Math.min(processes.length - 1, selectedIndex + 1));
+      // Loop to beginning when at the end
+      onSelect(selectedIndex === processes.length - 1 ? 0 : selectedIndex + 1);
     } else if (key.return || input === 'k' || input === 'K') {
       onKill();
     }
