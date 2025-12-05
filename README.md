@@ -59,6 +59,7 @@ prockiller
 - View process details (PID, name, protocol, address)
 - Kill individual processes or all at once
 - Cross-platform support (Windows & Unix)
+- Auto-updates to the latest version
 - Beautiful orange-themed UI
 
 ## Requirements

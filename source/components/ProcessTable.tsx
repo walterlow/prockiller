@@ -9,15 +9,20 @@ interface ProcessTableProps {
   onKill: () => void;
 }
 
-function calculateColumnWidths(terminalWidth: number) {
+const MIN_TERMINAL_WIDTH = 40;
+
+function calculateColumnWidths(terminalWidth: number | undefined) {
+  // Handle undefined/null terminal width and enforce minimum
+  const safeWidth = Math.max(terminalWidth ?? 80, MIN_TERMINAL_WIDTH);
+
   // Fixed columns: selector (3) + pid (8) + protocol (8) + padding/borders (~6)
   const fixedWidth = 3 + 8 + 8 + 6;
-  const availableWidth = Math.max(terminalWidth - fixedWidth, 30);
+  const availableWidth = Math.max(safeWidth - fixedWidth, 20);
 
   // Distribute remaining space between name and address
   // Name gets 40%, address gets 60%
-  const nameWidth = Math.max(Math.floor(availableWidth * 0.4), 10);
-  const addressWidth = Math.max(availableWidth - nameWidth, 12);
+  const nameWidth = Math.max(Math.floor(availableWidth * 0.4), 8);
+  const addressWidth = Math.max(availableWidth - nameWidth, 10);
 
   return {
     pid: 8,
@@ -29,8 +34,7 @@ function calculateColumnWidths(terminalWidth: number) {
 
 export function ProcessTable({ processes, selectedIndex, onSelect, onKill }: ProcessTableProps) {
   const { stdout } = useStdout();
-  const terminalWidth = stdout?.columns ?? 80;
-  const colWidths = calculateColumnWidths(terminalWidth);
+  const colWidths = calculateColumnWidths(stdout?.columns);
 
   useInput((input, key) => {
     if (key.upArrow) {

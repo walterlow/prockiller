@@ -1,30 +1,29 @@
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
+import { validatePort } from '../utils/validation.js';
 
 interface PortInputProps {
   onSubmit: (port: number) => void;
+  disabled?: boolean;
 }
 
-export function PortInput({ onSubmit }: PortInputProps) {
+export function PortInput({ onSubmit, disabled = false }: PortInputProps) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (input: string) => {
-    const port = parseInt(input, 10);
+    if (disabled) return;
 
-    if (isNaN(port)) {
-      setError('Please enter a valid number');
-      return;
-    }
+    const validation = validatePort(input);
 
-    if (port < 1 || port > 65535) {
-      setError('Port must be between 1 and 65535');
+    if (!validation.valid) {
+      setError(validation.error || 'Invalid port');
       return;
     }
 
     setError(null);
-    onSubmit(port);
+    onSubmit(parseInt(input, 10));
   };
 
   return (

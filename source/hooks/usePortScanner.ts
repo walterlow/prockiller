@@ -44,29 +44,46 @@ export function usePortScanner(): UsePortScannerResult {
   }, []);
 
   const killAll = useCallback(async () => {
-    const currentProcesses = processes;
+    // Capture current processes at call time
+    const currentProcesses = [...processes];
+
+    if (currentProcesses.length === 0) {
+      return { success: false, message: 'No processes to kill' };
+    }
+
+    // Kill all processes in parallel
+    const results = await Promise.allSettled(
+      currentProcesses.map(proc => killProcess(proc.pid))
+    );
+
     let killed = 0;
     let failed = 0;
     const errors: string[] = [];
+    const killedPids: number[] = [];
 
-    for (const proc of currentProcesses) {
-      const result = await killProcess(proc.pid);
-      if (result.success) {
+    results.forEach((result, index) => {
+      const proc = currentProcesses[index];
+      if (result.status === 'fulfilled' && result.value.success) {
         killed++;
+        killedPids.push(proc.pid);
       } else {
         failed++;
-        errors.push(`${proc.name} (${proc.pid}): ${result.message}`);
+        const message = result.status === 'rejected'
+          ? result.reason?.message || 'Unknown error'
+          : result.value.message;
+        errors.push(`${proc.name} (${proc.pid}): ${message}`);
       }
-    }
+    });
 
-    setProcesses([]);
+    // Only remove successfully killed processes
+    setProcesses(prev => prev.filter(p => !killedPids.includes(p.pid)));
 
     if (failed === 0) {
       return { success: true, message: `Killed all ${killed} process${killed !== 1 ? 'es' : ''}` };
     } else if (killed === 0) {
       return { success: false, message: `Failed to kill any processes. ${errors[0]}` };
     } else {
-      return { success: true, message: `Killed ${killed}, failed ${failed}` };
+      return { success: true, message: `Killed ${killed}, failed ${failed}: ${errors.slice(0, 2).join('; ')}` };
     }
   }, [processes]);
 

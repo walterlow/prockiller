@@ -5,3 +5,4 @@ export { ProcessTable } from './ProcessTable.js';
 export { ConfirmDialog } from './ConfirmDialog.js';
 export { StatusBar } from './StatusBar.js';
 export { ResultMessage } from './ResultMessage.js';
+export { ErrorDisplay } from './ErrorDisplay.js';

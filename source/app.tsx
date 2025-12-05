@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { Box, useApp, useInput } from 'ink';
+import React, { useState, useCallback, useEffect } from 'react';
+import { Box, Text, useApp, useInput } from 'ink';
 import { Banner } from './components/Banner.js';
 import { PortInput } from './components/PortInput.js';
 import { Spinner } from './components/Spinner.js';
@@ -7,9 +7,11 @@ import { ProcessTable } from './components/ProcessTable.js';
 import { ConfirmDialog } from './components/ConfirmDialog.js';
 import { StatusBar } from './components/StatusBar.js';
 import { ResultMessage } from './components/ResultMessage.js';
+import { ErrorDisplay } from './components/ErrorDisplay.js';
 import { usePortScanner } from './hooks/usePortScanner.js';
+import { useUpdateChecker } from './hooks/useUpdateChecker.js';
 
-type AppState = 'input' | 'scanning' | 'results' | 'confirm' | 'confirm-all' | 'result-message';
+type AppState = 'input' | 'scanning' | 'results' | 'confirm' | 'confirm-all' | 'result-message' | 'error';
 
 interface ResultState {
   success: boolean;
@@ -22,7 +24,15 @@ export function App() {
   const [currentPort, setCurrentPort] = useState<number>(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [result, setResult] = useState<ResultState | null>(null);
-  const { state: scanState, processes, scan, kill, killAll, reset } = usePortScanner();
+  const { state: scanState, processes, error, scan, kill, killAll, reset } = usePortScanner();
+  const updateResult = useUpdateChecker();
+
+  // Handle error state transitions
+  useEffect(() => {
+    if (scanState === 'error' && error) {
+      setAppState('error');
+    }
+  }, [scanState, error]);
 
   // Handle global keyboard shortcuts
   useInput((input, key) => {
@@ -41,7 +51,7 @@ export function App() {
     } else if (key.escape) {
       if (appState === 'confirm' || appState === 'confirm-all') {
         setAppState('results');
-      } else if (appState === 'results') {
+      } else if (appState === 'results' || appState === 'error') {
         setAppState('input');
         reset();
       }
@@ -49,12 +59,31 @@ export function App() {
   });
 
   const handlePortSubmit = useCallback(async (port: number) => {
+    // Guard against re-submission during active operations
+    if (appState === 'scanning') {
+      return;
+    }
+
     setCurrentPort(port);
     setAppState('scanning');
     setSelectedIndex(0);
     await scan(port);
-    setAppState('results');
-  }, [scan]);
+    // Only transition to results if not in error state
+    if (scanState !== 'error') {
+      setAppState('results');
+    }
+  }, [scan, appState, scanState]);
+
+  const handleErrorDismiss = useCallback(() => {
+    setAppState('input');
+    reset();
+  }, [reset]);
+
+  const handleErrorRetry = useCallback(() => {
+    if (currentPort > 0) {
+      handlePortSubmit(currentPort);
+    }
+  }, [currentPort, handlePortSubmit]);
 
   const handleKillRequest = useCallback(() => {
     if (processes.length > 0) {
@@ -98,6 +127,7 @@ export function App() {
   const getStatusBarMode = (): 'input' | 'scanning' | 'results' | 'confirm' => {
     if (appState === 'result-message') return 'results';
     if (appState === 'confirm-all') return 'confirm';
+    if (appState === 'error') return 'input';
     return appState;
   };
 
@@ -105,8 +135,38 @@ export function App() {
     <Box flexDirection="column" padding={1}>
       <Banner />
 
+      {updateResult.status === 'checking' && (
+        <Box marginBottom={1}>
+          <Text dimColor>Checking for updates...</Text>
+        </Box>
+      )}
+
+      {updateResult.status === 'updating' && (
+        <Box marginBottom={1}>
+          <Text color="#4a9eff">Updating...</Text>
+        </Box>
+      )}
+
+      {updateResult.message && (
+        <Box marginBottom={1}>
+          {updateResult.success ? (
+            <Text color="#4a9eff">✓ {updateResult.message}</Text>
+          ) : (
+            <Text color="#ffa500">⚠ {updateResult.message}</Text>
+          )}
+        </Box>
+      )}
+
       {appState === 'input' && (
         <PortInput onSubmit={handlePortSubmit} />
+      )}
+
+      {appState === 'error' && error && (
+        <ErrorDisplay
+          message={error}
+          onRetry={handleErrorRetry}
+          onDismiss={handleErrorDismiss}
+        />
       )}
 
       {appState === 'scanning' && (

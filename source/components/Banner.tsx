@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Text, useStdout } from 'ink';
+import { getCurrentVersion } from '../utils/version.js';
 
 // Each letter as separate array of lines for fixed-width rendering
 const LETTERS: Record<string, string[]> = {
@@ -95,7 +96,10 @@ const MIN_WIDTH_COMPACT_BANNER = 30;
 
 export function Banner() {
   const { stdout } = useStdout();
-  const width = stdout?.columns ?? 80;
+  // Handle edge case where stdout.columns is undefined, 0, or negative
+  const rawWidth = stdout?.columns;
+  const width = (typeof rawWidth === 'number' && rawWidth > 0) ? rawWidth : 80;
+  const version = getCurrentVersion();
 
   // Full ASCII art banner
   if (width >= MIN_WIDTH_FULL_BANNER) {
@@ -108,7 +112,8 @@ export function Banner() {
           <AsciiWord letters={KILLER} />
         </Box>
         <Box marginTop={1}>
-          <Text dimColor>  Find and kill processes hogging your ports</Text>
+          <Text dimColor>  Find and kill processes hogging your ports.  </Text>
+          <Text color="#666666">[{version}]</Text>
         </Box>
       </Box>
     );
@@ -118,8 +123,12 @@ export function Banner() {
   if (width >= MIN_WIDTH_COMPACT_BANNER) {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <Text color="#ff6a00" bold>PROCKILLER</Text>
-        <Text dimColor>Find and kill processes</Text>
+        <Box>
+          <Text color="#ff6a00" bold>PROCKILLER</Text>
+          <Text dimColor> </Text>
+          <Text color="#666666">[{version}]</Text>
+        </Box>
+        <Text dimColor>Find and kill processes.</Text>
       </Box>
     );
   }
@@ -128,6 +137,8 @@ export function Banner() {
   return (
     <Box marginBottom={1}>
       <Text color="#ff6a00" bold>PROCKILLER</Text>
+      <Text dimColor> </Text>
+      <Text color="#666666">[{version}]</Text>
     </Box>
   );
 }
