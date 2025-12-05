@@ -1,6 +1,6 @@
 {
   "name": "@walterlow/prockiller",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Interactive CLI to find and kill processes by port",
   "author": "walterlow",
   "license": "MIT",
