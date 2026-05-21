@@ -1,0 +1,18 @@
+[package]
+name = "prockiller-iced"
+version = "1.0.3"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+iced = { version = "0.14.0", features = ["tokio"] }
+reqwest = { version = "0.12.25", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+panic = "abort"
+strip = true
