@@ -1,18 +1,20 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use iced::keyboard::{self, key};
 use iced::mouse::{self, Interaction};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
 use iced::{
-    event, Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Subscription,
-    Task, Theme,
+    event, time, window, Alignment, Background, Border, Color, Element, Length, Padding, Shadow,
+    Subscription, Task, Theme,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -26,6 +28,7 @@ const ACTION_GUTTER_WIDTH: f32 = 6.0;
 const HEADER_HEIGHT: f32 = 34.0;
 const RESIZE_HANDLE_WIDTH: f32 = 6.0;
 const RESIZE_LINE_WIDTH: f32 = 1.0;
+const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const COLUMN_COUNT: usize = 6;
 const MIN_COLUMN_UNITS: u16 = 5;
 const RESIZE_STEP_PX: f32 = 7.0;
@@ -34,9 +37,17 @@ const DEFAULT_COLUMN_UNITS: [u16; COLUMN_COUNT] = [9, 26, 26, 14, 9, 26];
 fn main() -> iced::Result {
     iced::application(Prockiller::boot, Prockiller::update, Prockiller::view)
         .title("Prockiller")
+        .window(window::Settings {
+            icon: app_icon(),
+            ..window::Settings::default()
+        })
         .theme(Theme::GruvboxDark)
         .subscription(Prockiller::subscription)
         .run()
+}
+
+fn app_icon() -> Option<window::Icon> {
+    window::icon::from_rgba(include_bytes!("../icon.rgba").to_vec(), 128, 128).ok()
 }
 
 struct Prockiller {
@@ -44,6 +55,8 @@ struct Prockiller {
     connections: Vec<ConnectionInfo>,
     status: String,
     is_busy: bool,
+    is_refreshing: bool,
+    auto_refresh_enabled: bool,
     sort_column: SortColumn,
     sort_direction: SortDirection,
     column_units: [u16; COLUMN_COUNT],
@@ -58,6 +71,8 @@ impl Default for Prockiller {
             connections: Vec::new(),
             status: "Refresh to list active network connections.".to_string(),
             is_busy: false,
+            is_refreshing: false,
+            auto_refresh_enabled: true,
             sort_column: SortColumn::LocalAddress,
             sort_direction: SortDirection::Ascending,
             column_units: DEFAULT_COLUMN_UNITS,
@@ -72,6 +87,9 @@ enum Message {
     FilterChanged(String),
     Refresh,
     RefreshFinished(Result<Vec<ConnectionInfo>, String>),
+    AutoRefreshTick,
+    AutoRefreshFinished(Result<Vec<ConnectionInfo>, String>),
+    ToggleAutoRefresh,
     Kill(i32),
     KillFinished(Result<i32, String>),
     KillAll,
@@ -168,7 +186,7 @@ struct GithubAsset {
 impl Prockiller {
     fn boot() -> (Self, Task<Message>) {
         let mut app = Self::default();
-        app.is_busy = true;
+        app.is_refreshing = true;
         app.status = "Refreshing connections...".to_string();
 
         (
@@ -184,13 +202,17 @@ impl Prockiller {
                 Task::none()
             }
             Message::Refresh => {
-                self.is_busy = true;
+                if self.is_refreshing {
+                    return Task::none();
+                }
+
+                self.is_refreshing = true;
                 self.status = "Refreshing connections...".to_string();
 
                 Task::perform(find_connections(), Message::RefreshFinished)
             }
             Message::RefreshFinished(result) => {
-                self.is_busy = false;
+                self.is_refreshing = false;
 
                 match result {
                     Ok(connections) => {
@@ -202,6 +224,38 @@ impl Prockiller {
                     }
                 }
 
+                Task::none()
+            }
+            Message::AutoRefreshTick => {
+                if self.is_refreshing || self.is_busy {
+                    return Task::none();
+                }
+
+                self.is_refreshing = true;
+                Task::perform(find_connections(), Message::AutoRefreshFinished)
+            }
+            Message::AutoRefreshFinished(result) => {
+                self.is_refreshing = false;
+
+                match result {
+                    Ok(connections) => {
+                        self.status = format!("Loaded {} connection(s).", connections.len());
+                        self.connections = connections;
+                    }
+                    Err(error) => {
+                        self.status = format!("Auto refresh failed: {error}");
+                    }
+                }
+
+                Task::none()
+            }
+            Message::ToggleAutoRefresh => {
+                self.auto_refresh_enabled = !self.auto_refresh_enabled;
+                self.status = if self.auto_refresh_enabled {
+                    "Auto refresh enabled.".to_string()
+                } else {
+                    "Auto refresh paused.".to_string()
+                };
                 Task::none()
             }
             Message::Kill(pid) => {
@@ -351,26 +405,52 @@ impl Prockiller {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        if self.resize_drag.is_none() {
-            return Subscription::none();
+        let mut subscriptions = Vec::new();
+
+        if self.resize_drag.is_some() {
+            subscriptions.push(event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(Message::ResizeMoved(position.x))
+                }
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    Some(Message::ResizeFinished)
+                }
+                _ => None,
+            }));
         }
 
-        event::listen_with(|event, _status, _window| match event {
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                Some(Message::ResizeMoved(position.x))
-            }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                Some(Message::ResizeFinished)
-            }
+        if self.auto_refresh_enabled {
+            subscriptions
+                .push(time::every(AUTO_REFRESH_INTERVAL).map(|_| Message::AutoRefreshTick));
+        }
+
+        subscriptions.push(event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(key::Named::F5),
+                repeat: false,
+                ..
+            }) => Some(Message::Refresh),
             _ => None,
-        })
+        }));
+
+        Subscription::batch(subscriptions)
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let refresh_button = if self.is_busy {
+        let refresh_button = if self.is_refreshing {
             button("Refresh")
         } else {
             button("Refresh").on_press(Message::Refresh)
+        };
+
+        let auto_refresh_button = if self.auto_refresh_enabled {
+            button("Auto 5s")
+                .on_press(Message::ToggleAutoRefresh)
+                .style(gruvbox_button)
+        } else {
+            button("Auto off")
+                .on_press(Message::ToggleAutoRefresh)
+                .style(gruvbox_button)
         };
 
         let filtered_connections = self.filtered_connections();
@@ -420,6 +500,7 @@ impl Prockiller {
             .style(gruvbox_text_input)
             .width(Length::Fill),
             refresh_button,
+            auto_refresh_button,
             kill_all_button,
             update_button,
             text(summary).size(14).width(Length::Fixed(300.0)),
