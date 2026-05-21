@@ -5,7 +5,8 @@ use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
 use iced::{
-    event, Alignment, Background, Border, Color, Element, Length, Shadow, Subscription, Task, Theme,
+    event, Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Subscription,
+    Task, Theme,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -415,6 +416,7 @@ impl Prockiller {
             )
             .on_input(Message::FilterChanged)
             .padding(6)
+            .size(15)
             .style(gruvbox_text_input)
             .width(Length::Fill),
             refresh_button,
@@ -425,7 +427,7 @@ impl Prockiller {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        let update_row = row![
+        let status_bar = row![
             text(update_text)
                 .size(13)
                 .wrapping(Wrapping::None)
@@ -433,15 +435,23 @@ impl Prockiller {
             text(&self.status)
                 .size(13)
                 .wrapping(Wrapping::None)
+                .align_x(iced::alignment::Horizontal::Right)
                 .width(Length::Fill),
         ]
         .spacing(14)
-        .padding([0, 2])
+        .padding([5, 10])
         .align_y(Alignment::Center);
 
-        let controls = column![title_row, update_row]
-            .spacing(6)
+        let status_bar = container(status_bar)
+            .style(|_| gruvbox_container(GB_BG0, Some(GB_FG1), GB_BG0))
             .width(Length::Fill);
+
+        let status_divider = container(text(""))
+            .height(Length::Fixed(1.0))
+            .width(Length::Fill)
+            .style(|_| gruvbox_container(GB_BG2, None, GB_BG2));
+
+        let controls = column![title_row].spacing(0).width(Length::Fill);
 
         let header = row![
             sort_header(
@@ -506,23 +516,29 @@ impl Prockiller {
                 list.push(
                     container(
                         row![
-                            cell_text(&connection.protocol)
-                                .width(Length::FillPortion(self.column_units[0])),
+                            cell(
+                                &connection.protocol,
+                                Length::FillPortion(self.column_units[0])
+                            ),
                             container(text("")).width(Length::Fixed(6.0)),
-                            cell_text(&connection.local_address)
-                                .width(Length::FillPortion(self.column_units[1])),
+                            cell(
+                                &connection.local_address,
+                                Length::FillPortion(self.column_units[1])
+                            ),
                             container(text("")).width(Length::Fixed(6.0)),
-                            cell_text(&connection.foreign_address)
-                                .width(Length::FillPortion(self.column_units[2])),
+                            cell(
+                                &connection.foreign_address,
+                                Length::FillPortion(self.column_units[2])
+                            ),
                             container(text("")).width(Length::Fixed(6.0)),
-                            cell_text(&connection.state)
-                                .width(Length::FillPortion(self.column_units[3])),
+                            cell(&connection.state, Length::FillPortion(self.column_units[3])),
                             container(text("")).width(Length::Fixed(6.0)),
-                            cell_text(connection.pid.to_string())
-                                .width(Length::FillPortion(self.column_units[4])),
+                            cell(
+                                connection.pid.to_string(),
+                                Length::FillPortion(self.column_units[4])
+                            ),
                             container(text("")).width(Length::Fixed(6.0)),
-                            cell_text(&connection.name)
-                                .width(Length::FillPortion(self.column_units[5])),
+                            cell(&connection.name, Length::FillPortion(self.column_units[5])),
                             kill_button(connection.pid, self.is_busy)
                                 .width(Length::Fixed(ACTION_COLUMN_WIDTH)),
                             container(text("")).width(Length::Fixed(ACTION_GUTTER_WIDTH)),
@@ -546,9 +562,14 @@ impl Prockiller {
             .height(Length::Fill)
             .width(Length::Fill);
 
-        let content = column![controls, header, table,]
+        let content = column![controls, header, table, status_divider, status_bar,]
             .spacing(6)
-            .padding(8)
+            .padding(Padding {
+                top: 8.0,
+                right: 8.0,
+                bottom: 6.0,
+                left: 8.0,
+            })
             .height(Length::Fill);
 
         container(content)
@@ -602,6 +623,13 @@ fn sort_header<'a>(
 
 fn cell_text<'a>(value: impl Into<String>) -> iced::widget::Text<'a> {
     text(value.into()).size(14).wrapping(Wrapping::None)
+}
+
+fn cell<'a>(value: impl Into<String>, width: Length) -> Element<'a, Message> {
+    container(cell_text(value).width(Length::Fill))
+        .width(width)
+        .clip(true)
+        .into()
 }
 
 fn kill_button(pid: i32, is_busy: bool) -> iced::widget::Button<'static, Message> {
