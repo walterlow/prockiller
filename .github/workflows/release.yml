@@ -48,7 +48,7 @@ jobs:
           "$hash  $(Split-Path $artifact -Leaf)" | Out-File "$artifact.sha256" -Encoding ascii
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prockiller-iced-windows-x64
           path: |
