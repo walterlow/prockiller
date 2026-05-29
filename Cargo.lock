@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "prockiller-iced"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "iced",
  "reqwest",
