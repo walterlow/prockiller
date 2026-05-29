@@ -12,7 +12,7 @@ use iced::{
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -185,9 +185,11 @@ struct GithubAsset {
 
 impl Prockiller {
     fn boot() -> (Self, Task<Message>) {
-        let mut app = Self::default();
-        app.is_refreshing = true;
-        app.status = "Refreshing connections...".to_string();
+        let app = Self {
+            is_refreshing: true,
+            status: "Refreshing connections...".to_string(),
+            ..Self::default()
+        };
 
         (
             app,
@@ -1093,12 +1095,11 @@ async fn install_update(info: UpdateInfo) -> Result<(), String> {
 }
 
 fn write_update_script(
-    script_path: &PathBuf,
-    download_path: &PathBuf,
-    current_exe: &PathBuf,
+    script_path: &Path,
+    download_path: &Path,
+    current_exe: &Path,
 ) -> Result<(), String> {
-    let script = format!(
-        r#"
+    let script = r#"
 param(
   [Parameter(Mandatory=$true)][int]$Pid,
   [Parameter(Mandatory=$true)][string]$Source,
@@ -1113,7 +1114,7 @@ Start-Process -FilePath $Target
 Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 "#
-    );
+    .to_string();
 
     fs::write(script_path, script).map_err(|error| {
         format!(

@@ -1,6 +1,5 @@
-node_modules/
-dist/
 target/
+dist/
 *.log
 .DS_Store
 .claude/

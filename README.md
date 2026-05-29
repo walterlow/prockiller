@@ -1,76 +1,60 @@
-# prockiller
+# Prockiller
 
-Interactive CLI tool to find and kill processes by port. Built with [React Ink](https://github.com/vadimdemedes/ink).
+Find and kill processes by port. Rust + [iced](https://iced.rs) desktop app for Windows.
 
-[![npm version](https://img.shields.io/npm/v/@walterlow/prockiller?color=orange&style=flat-square)](https://www.npmjs.com/package/@walterlow/prockiller)
+![Prockiller screenshot](./screenshot.png)
 
-![prockiller demo](./prockiller.png)
+## Download
 
-## Install
+Grab the latest `prockiller-iced-vX.Y.Z-windows-x64.exe` from the
+[Releases](https://github.com/walterlow/prockiller/releases) page. It's a single
+executable — no install required.
 
-```bash
-npm install -g @walterlow/prockiller
+## Build from source
+
+Install Rust:
+
+```powershell
+winget install Rustlang.Rustup
 ```
 
-Or run directly with npx:
+Then build:
 
-```bash
-npx @walterlow/prockiller
+```powershell
+cargo build --release
 ```
 
-## Usage
+Output: `target/release/prockiller-iced.exe`
 
-```bash
-prockiller
+Or use the helper script, which builds and stages a versioned, checksummed
+artifact in `dist/` (mirrors the release pipeline):
+
+```powershell
+.\build-release.ps1
 ```
 
-1. Enter a port number to scan
-2. Navigate with arrow keys to select a process
-3. Press `Enter` or `K` to kill, or `A` to kill all
+## Releases (CI/CD)
 
-## Keyboard Shortcuts
+Releases are built by GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
 
-| Key | Action |
-|-----|--------|
-| `↑` `↓` | Navigate process list |
-| `Enter` / `K` | Kill selected process |
-| `A` | Kill all processes (when multiple found) |
-| `R` | Rescan current port |
-| `Esc` | Go back |
-| `Q` | Quit |
-| `Y` / `N` | Confirm / Cancel kill |
+To cut a release:
 
-## Features
+1. Bump `version` in `Cargo.toml`.
+2. Commit, then tag and push:
 
-- Scan any port for running processes
-- View process details (PID, name, protocol, address)
-- Kill individual processes or all at once
-- Cross-platform support (Windows & Unix)
-- Auto-updates to the latest version
-- Beautiful orange-themed UI
+   ```powershell
+   git tag v1.0.4
+   git push origin v1.0.4
+   ```
 
-## Requirements
+The workflow first verifies the pushed tag matches the `version` in `Cargo.toml`,
+then builds the release binary on `windows-latest`, names it
+`prockiller-iced-v<version>-windows-x64.exe`, generates a matching `.sha256`
+checksum, and attaches both to a GitHub Release with auto-generated notes. You can
+also trigger it manually from the Actions tab (build-only, no release published).
 
-- Node.js 18+
-- Windows: Uses `netstat` and `taskkill`
-- Unix/Mac: Uses `lsof` and `kill`
-
-## Development
-
-```bash
-# Clone the repo
-git clone https://github.com/walterlow/prockiller.git
-cd prockiller
-
-# Install dependencies
-npm install
-
-# Run in dev mode
-npm run dev
-
-# Build
-npm run build
-```
+Every push to `main` and every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
+which checks formatting, runs Clippy, builds, and runs the test suite.
 
 ## License
 
