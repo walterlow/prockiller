@@ -1,8 +1,22 @@
 # Prockiller
 
-Find and kill processes by port. Rust + [iced](https://iced.rs) desktop app for Windows.
+A desktop app for Windows that lists active network connections and lets you kill
+the process behind any one of them with a single click. Built with Rust and
+[iced](https://iced.rs).
 
 ![Prockiller screenshot](./screenshot.png)
+
+## Features
+
+- **Live connection table** — protocol, local address, foreign address, state, PID,
+  and process name for every active connection (backed by `netstat` / `tasklist`).
+- **One-click kill** — terminate the process holding a port without dropping to a
+  terminal.
+- **Filter** — narrow the list by port, process, PID, address, or state as you type.
+- **Sortable, resizable columns** — click a header to sort; drag the dividers to
+  resize.
+- **Auto-refresh** — the table updates every 5 seconds (toggleable).
+- **Update check** — notifies you when a newer release is available.
 
 ## Download
 
