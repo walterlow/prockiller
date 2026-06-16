@@ -1,7 +1,7 @@
 # Prockiller
 
-A desktop app for Windows that lists active network connections and lets you kill
-the process behind any one of them with a single click. Built with Rust and
+A desktop app for Windows that lists active network connections and helps you
+terminate the process behind a selected port after an explicit confirmation. Built with Rust and
 [iced](https://iced.rs).
 
 ![Prockiller screenshot](./screenshot.png)
@@ -10,9 +10,14 @@ the process behind any one of them with a single click. Built with Rust and
 
 - **Live connection table** — protocol, local address, foreign address, state, PID,
   and process name for every active connection (backed by `netstat` / `tasklist`).
-- **One-click kill** — terminate the process holding a port without dropping to a
-  terminal.
-- **Filter** — narrow the list by port, process, PID, address, or state as you type.
+- **Port-first workflow** — enter a local port directly, then jump back to recent
+  ports without retyping them.
+- **Safe termination** — row-level and visible-process kills open a confirmation
+  panel before Prockiller runs `taskkill /F`.
+- **Quick filters** — narrow to listening, established, TCP, UDP, or local
+  bindings before killing anything.
+- **Search** — narrow the list by process, PID, address, protocol, or state as
+  you type.
 - **Sortable, resizable columns** — click a header to sort; drag the dividers to
   resize.
 - **Auto-refresh** — the table updates every 5 seconds (toggleable).
@@ -57,8 +62,8 @@ To cut a release:
 2. Commit, then tag and push:
 
    ```powershell
-   git tag v1.0.4
-   git push origin v1.0.4
+   git tag v1.0.6
+   git push origin v1.0.6
    ```
 
 The workflow first verifies the pushed tag matches the `version` in `Cargo.toml`,

@@ -51,32 +51,44 @@ fn app_icon() -> Option<window::Icon> {
 }
 
 struct Prockiller {
+    port_filter: String,
     filter: String,
     connections: Vec<ConnectionInfo>,
     status: String,
+    activity: Vec<String>,
     is_busy: bool,
     is_refreshing: bool,
     auto_refresh_enabled: bool,
+    quick_filter: QuickFilter,
     sort_column: SortColumn,
     sort_direction: SortDirection,
     column_units: [u16; COLUMN_COUNT],
     resize_drag: Option<ResizeDrag>,
+    pending_action: Option<PendingAction>,
+    recent_ports: Vec<u16>,
     update: UpdateState,
 }
 
 impl Default for Prockiller {
     fn default() -> Self {
         Self {
+            port_filter: String::new(),
             filter: String::new(),
             connections: Vec::new(),
             status: "Refresh to list active network connections.".to_string(),
+            activity: vec![
+                "Ready. Refresh or enter a port to narrow the connection list.".to_string(),
+            ],
             is_busy: false,
             is_refreshing: false,
             auto_refresh_enabled: true,
+            quick_filter: QuickFilter::All,
             sort_column: SortColumn::LocalAddress,
             sort_direction: SortDirection::Ascending,
             column_units: DEFAULT_COLUMN_UNITS,
             resize_drag: None,
+            pending_action: None,
+            recent_ports: Vec::new(),
             update: UpdateState::Idle,
         }
     }
@@ -84,16 +96,23 @@ impl Default for Prockiller {
 
 #[derive(Debug, Clone)]
 enum Message {
+    PortFilterChanged(String),
+    RememberPortFilter,
+    ClearPortFilter,
+    RecentPortSelected(u16),
     FilterChanged(String),
+    QuickFilterSelected(QuickFilter),
     Refresh,
     RefreshFinished(Result<Vec<ConnectionInfo>, String>),
     AutoRefreshTick,
     AutoRefreshFinished(Result<Vec<ConnectionInfo>, String>),
     ToggleAutoRefresh,
-    Kill(i32),
+    KillRequested(i32),
+    KillVisibleRequested,
+    ConfirmPendingKill,
+    CancelPendingKill,
     KillFinished(Result<i32, String>),
-    KillAll,
-    KillAllFinished(Result<usize, String>),
+    KillAllFinished(KillManyResult),
     SortBy(SortColumn),
     ResizeStarted(usize),
     ResizeMoved(f32),
@@ -136,6 +155,32 @@ struct ConnectionStats {
     udp: usize,
     established: usize,
     listening: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuickFilter {
+    All,
+    Listening,
+    Established,
+    Tcp,
+    Udp,
+    Localhost,
+}
+
+#[derive(Debug, Clone)]
+enum PendingAction {
+    Single(ConnectionInfo),
+    Visible {
+        pids: Vec<i32>,
+        process_count: usize,
+        connection_count: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct KillManyResult {
+    killed_pids: Vec<i32>,
+    failed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,8 +244,38 @@ impl Prockiller {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::PortFilterChanged(value) => {
+                self.port_filter = sanitize_port_filter(&value);
+                Task::none()
+            }
+            Message::RememberPortFilter => {
+                if let Some(port) = parse_port_filter(&self.port_filter) {
+                    self.remember_port(port);
+                    self.status = format!("Showing connections on port {port}.");
+                    self.push_activity(format!("Port filter set to {port}."));
+                }
+                Task::none()
+            }
+            Message::ClearPortFilter => {
+                self.port_filter.clear();
+                self.status = "Showing all ports.".to_string();
+                self.push_activity("Port filter cleared.".to_string());
+                Task::none()
+            }
+            Message::RecentPortSelected(port) => {
+                self.port_filter = port.to_string();
+                self.remember_port(port);
+                self.status = format!("Showing connections on port {port}.");
+                self.push_activity(format!("Recent port selected: {port}."));
+                Task::none()
+            }
             Message::FilterChanged(filter) => {
                 self.filter = filter;
+                Task::none()
+            }
+            Message::QuickFilterSelected(filter) => {
+                self.quick_filter = filter;
+                self.status = format!("Filter: {}.", quick_filter_label(filter));
                 Task::none()
             }
             Message::Refresh => {
@@ -210,6 +285,7 @@ impl Prockiller {
 
                 self.is_refreshing = true;
                 self.status = "Refreshing connections...".to_string();
+                self.push_activity("Manual refresh started.".to_string());
 
                 Task::perform(find_connections(), Message::RefreshFinished)
             }
@@ -219,10 +295,12 @@ impl Prockiller {
                 match result {
                     Ok(connections) => {
                         self.status = format!("Loaded {} connection(s).", connections.len());
+                        self.push_activity(self.status.clone());
                         self.connections = connections;
                     }
                     Err(error) => {
                         self.status = error;
+                        self.push_activity(format!("Refresh failed: {}", self.status));
                     }
                 }
 
@@ -242,10 +320,12 @@ impl Prockiller {
                 match result {
                     Ok(connections) => {
                         self.status = format!("Loaded {} connection(s).", connections.len());
+                        self.push_activity(self.status.clone());
                         self.connections = connections;
                     }
                     Err(error) => {
                         self.status = format!("Auto refresh failed: {error}");
+                        self.push_activity(self.status.clone());
                     }
                 }
 
@@ -258,32 +338,33 @@ impl Prockiller {
                 } else {
                     "Auto refresh paused.".to_string()
                 };
+                self.push_activity(self.status.clone());
                 Task::none()
             }
-            Message::Kill(pid) => {
-                self.is_busy = true;
-                self.status = format!("Killing process {pid}...");
-                Task::perform(kill_process(pid), Message::KillFinished)
-            }
-            Message::KillFinished(result) => {
-                self.is_busy = false;
+            Message::KillRequested(pid) => {
+                if self.is_busy {
+                    return Task::none();
+                }
 
-                match result {
-                    Ok(pid) => {
-                        self.connections.retain(|connection| connection.pid != pid);
-                        self.status = format!("Process {pid} terminated.");
-                    }
-                    Err(error) => {
-                        self.status = error;
-                    }
+                if let Some(connection) = self
+                    .connections
+                    .iter()
+                    .find(|connection| connection.pid == pid)
+                {
+                    self.pending_action = Some(PendingAction::Single(connection.clone()));
+                    self.status = format!("Confirm termination of {} ({pid}).", connection.name);
                 }
 
                 Task::none()
             }
-            Message::KillAll => {
-                let pids = self
-                    .filtered_connections()
-                    .into_iter()
+            Message::KillVisibleRequested => {
+                if self.is_busy {
+                    return Task::none();
+                }
+
+                let visible_connections = self.filtered_connections();
+                let pids = visible_connections
+                    .iter()
                     .map(|connection| connection.pid)
                     .filter(|pid| *pid > 0)
                     .collect::<HashSet<_>>()
@@ -294,23 +375,91 @@ impl Prockiller {
                     return Task::none();
                 }
 
-                self.is_busy = true;
-                self.status = format!("Killing {} process(es)...", pids.len());
+                self.pending_action = Some(PendingAction::Visible {
+                    pids,
+                    process_count: visible_connections
+                        .iter()
+                        .map(|connection| connection.pid)
+                        .collect::<HashSet<_>>()
+                        .len(),
+                    connection_count: visible_connections.len(),
+                });
+                self.status = "Confirm termination of visible processes.".to_string();
+                Task::none()
+            }
+            Message::ConfirmPendingKill => {
+                let Some(action) = self.pending_action.take() else {
+                    return Task::none();
+                };
 
-                Task::perform(kill_all_processes(pids), Message::KillAllFinished)
+                self.is_busy = true;
+
+                match action {
+                    PendingAction::Single(connection) => {
+                        self.status =
+                            format!("Killing {} ({})...", connection.name, connection.pid);
+                        self.push_activity(self.status.clone());
+                        Task::perform(kill_process(connection.pid), Message::KillFinished)
+                    }
+                    PendingAction::Visible { pids, .. } => {
+                        self.status = format!("Killing {} visible process(es)...", pids.len());
+                        self.push_activity(self.status.clone());
+                        Task::perform(kill_all_processes(pids), Message::KillAllFinished)
+                    }
+                }
+            }
+            Message::CancelPendingKill => {
+                self.pending_action = None;
+                self.status = "Kill cancelled.".to_string();
+                self.push_activity(self.status.clone());
+                Task::none()
+            }
+            Message::KillFinished(result) => {
+                self.is_busy = false;
+
+                match result {
+                    Ok(pid) => {
+                        self.connections.retain(|connection| connection.pid != pid);
+                        self.status = format!("Process {pid} terminated.");
+                        self.push_activity(self.status.clone());
+                    }
+                    Err(error) => {
+                        self.status = error;
+                        self.push_activity(format!("Kill failed: {}", self.status));
+                    }
+                }
+
+                Task::none()
             }
             Message::KillAllFinished(result) => {
                 self.is_busy = false;
 
-                match result {
-                    Ok(count) => {
-                        self.connections.clear();
-                        self.status = format!("Killed {count} process(es).");
-                    }
-                    Err(error) => {
-                        self.status = error;
-                    }
+                if !result.killed_pids.is_empty() {
+                    self.connections
+                        .retain(|connection| !result.killed_pids.contains(&connection.pid));
                 }
+
+                self.status = match (result.killed_pids.len(), result.failed.len()) {
+                    (0, 0) => "No processes were terminated.".to_string(),
+                    (killed, 0) => format!("Killed {killed} process(es)."),
+                    (0, failed) => {
+                        format!(
+                            "Failed to kill {failed} process(es): {}",
+                            result.failed.join("; ")
+                        )
+                    }
+                    (killed, failed) => format!(
+                        "Killed {killed}, failed {failed}: {}",
+                        result
+                            .failed
+                            .iter()
+                            .take(2)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ),
+                };
+                self.push_activity(self.status.clone());
 
                 Task::none()
             }
@@ -457,15 +606,27 @@ impl Prockiller {
 
         let filtered_connections = self.filtered_connections();
         let stats = connection_stats(&self.connections);
+        let visible_stats = connection_stats(
+            &filtered_connections
+                .iter()
+                .map(|connection| (*connection).clone())
+                .collect::<Vec<_>>(),
+        );
         let summary = format!(
-            "Total:{} TCP:{} UDP:{} EST:{} LISTEN:{}",
-            stats.total, stats.tcp, stats.udp, stats.established, stats.listening
+            "Visible:{} / {}  TCP:{} UDP:{} LISTEN:{}",
+            filtered_connections.len(),
+            stats.total,
+            visible_stats.tcp,
+            visible_stats.udp,
+            visible_stats.listening
         );
 
         let kill_all_button = if self.is_busy || filtered_connections.is_empty() {
             button("Kill visible")
         } else {
-            button("Kill visible").on_press(Message::KillAll)
+            button("Kill visible")
+                .on_press(Message::KillVisibleRequested)
+                .style(gruvbox_button)
         };
 
         let update_button = match &self.update {
@@ -492,23 +653,60 @@ impl Prockiller {
 
         let title_row = row![
             text("Prockiller").size(24).width(Length::Fixed(160.0)),
-            text_input(
-                "Filter by port, process, PID, address, or state",
-                &self.filter
-            )
-            .on_input(Message::FilterChanged)
-            .padding(6)
-            .size(15)
-            .style(gruvbox_text_input)
-            .width(Length::Fill),
+            text_input("Port", &self.port_filter)
+                .on_input(Message::PortFilterChanged)
+                .on_submit(Message::RememberPortFilter)
+                .padding(6)
+                .size(15)
+                .style(gruvbox_text_input)
+                .width(Length::Fixed(96.0)),
+            button("All ports").on_press(Message::ClearPortFilter),
+            text_input("Search process, PID, address, or state", &self.filter)
+                .on_input(Message::FilterChanged)
+                .padding(6)
+                .size(15)
+                .style(gruvbox_text_input)
+                .width(Length::Fill),
             refresh_button,
             auto_refresh_button,
-            kill_all_button,
             update_button,
-            text(summary).size(14).width(Length::Fixed(300.0)),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
+
+        let filter_row = row![
+            text("Show").size(14).width(Length::Fixed(44.0)),
+            filter_chip(QuickFilter::All, self.quick_filter),
+            filter_chip(QuickFilter::Listening, self.quick_filter),
+            filter_chip(QuickFilter::Established, self.quick_filter),
+            filter_chip(QuickFilter::Tcp, self.quick_filter),
+            filter_chip(QuickFilter::Udp, self.quick_filter),
+            filter_chip(QuickFilter::Localhost, self.quick_filter),
+            kill_all_button,
+            text(summary).size(14).width(Length::Fill),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        let mut controls = column![title_row, filter_row]
+            .spacing(6)
+            .width(Length::Fill);
+
+        if !self.recent_ports.is_empty() {
+            let mut recent_row = row![text("Recent").size(13).width(Length::Fixed(44.0))]
+                .spacing(6)
+                .align_y(Alignment::Center);
+
+            for port in &self.recent_ports {
+                recent_row = recent_row.push(
+                    button(text(port.to_string()))
+                        .on_press(Message::RecentPortSelected(*port))
+                        .style(gruvbox_button),
+                );
+            }
+
+            controls = controls.push(recent_row);
+        }
 
         let status_bar = row![
             text(update_text)
@@ -533,8 +731,6 @@ impl Prockiller {
             .height(Length::Fixed(1.0))
             .width(Length::Fill)
             .style(|_| gruvbox_container(GB_BG2, None, GB_BG2));
-
-        let controls = column![title_row].spacing(0).width(Length::Fill);
 
         let header = row![
             sort_header(
@@ -622,8 +818,11 @@ impl Prockiller {
                             ),
                             container(text("")).width(Length::Fixed(6.0)),
                             cell(&connection.name, Length::FillPortion(self.column_units[5])),
-                            kill_button(connection.pid, self.is_busy)
-                                .width(Length::Fixed(ACTION_COLUMN_WIDTH)),
+                            kill_button(
+                                connection.pid,
+                                self.is_busy || self.pending_action.is_some()
+                            )
+                            .width(Length::Fixed(ACTION_COLUMN_WIDTH)),
                             container(text("")).width(Length::Fixed(ACTION_GUTTER_WIDTH)),
                         ]
                         .spacing(4)
@@ -645,7 +844,7 @@ impl Prockiller {
             .height(Length::Fill)
             .width(Length::Fill);
 
-        let content = column![controls, header, table, status_divider, status_bar,]
+        let mut content = column![controls, header, table]
             .spacing(6)
             .padding(Padding {
                 top: 8.0,
@@ -654,6 +853,16 @@ impl Prockiller {
                 left: 8.0,
             })
             .height(Length::Fill);
+
+        if let Some(action) = &self.pending_action {
+            content = content.push(confirmation_panel(action));
+        }
+
+        if !self.activity.is_empty() {
+            content = content.push(activity_panel(&self.activity));
+        }
+
+        let content = content.push(status_divider).push(status_bar);
 
         container(content)
             .width(Length::Fill)
@@ -664,23 +873,41 @@ impl Prockiller {
 
     fn filtered_connections(&self) -> Vec<&ConnectionInfo> {
         let query = self.filter.trim().to_lowercase();
+        let port = parse_port_filter(&self.port_filter);
 
         let mut connections = self
             .connections
             .iter()
             .filter(|connection| {
-                query.is_empty()
+                let port_matches = port
+                    .map(|port| read_port(&connection.local_address) == Some(port))
+                    .unwrap_or(true);
+                let quick_filter_matches = matches_quick_filter(connection, self.quick_filter);
+                let query_matches = query.is_empty()
                     || connection.protocol.to_lowercase().contains(&query)
                     || connection.local_address.to_lowercase().contains(&query)
                     || connection.foreign_address.to_lowercase().contains(&query)
                     || connection.state.to_lowercase().contains(&query)
                     || connection.name.to_lowercase().contains(&query)
-                    || connection.pid.to_string().contains(&query)
+                    || connection.pid.to_string().contains(&query);
+
+                port_matches && quick_filter_matches && query_matches
             })
             .collect::<Vec<_>>();
 
         sort_connections(&mut connections, self.sort_column, self.sort_direction);
         connections
+    }
+
+    fn remember_port(&mut self, port: u16) {
+        self.recent_ports.retain(|recent_port| *recent_port != port);
+        self.recent_ports.insert(0, port);
+        self.recent_ports.truncate(6);
+    }
+
+    fn push_activity(&mut self, message: String) {
+        self.activity.insert(0, message);
+        self.activity.truncate(4);
     }
 }
 
@@ -704,6 +931,67 @@ fn sort_header<'a>(
         .style(gruvbox_header_button)
 }
 
+fn sanitize_port_filter(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .take(5)
+        .collect()
+}
+
+fn parse_port_filter(value: &str) -> Option<u16> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    trimmed
+        .parse::<u16>()
+        .ok()
+        .filter(|port| (1..=65535).contains(port))
+}
+
+fn matches_quick_filter(connection: &ConnectionInfo, filter: QuickFilter) -> bool {
+    match filter {
+        QuickFilter::All => true,
+        QuickFilter::Listening => connection.state == "LISTENING",
+        QuickFilter::Established => connection.state == "ESTABLISHED",
+        QuickFilter::Tcp => connection.protocol.starts_with("TCP"),
+        QuickFilter::Udp => connection.protocol.starts_with("UDP"),
+        QuickFilter::Localhost => {
+            connection.local_address.starts_with("127.")
+                || connection.local_address.starts_with("[::1]")
+                || connection.local_address.starts_with("localhost")
+                || connection.local_address.starts_with("0.0.0.0")
+                || connection.local_address.starts_with("[::]")
+        }
+    }
+}
+
+fn quick_filter_label(filter: QuickFilter) -> &'static str {
+    match filter {
+        QuickFilter::All => "All",
+        QuickFilter::Listening => "Listening",
+        QuickFilter::Established => "Established",
+        QuickFilter::Tcp => "TCP",
+        QuickFilter::Udp => "UDP",
+        QuickFilter::Localhost => "Local",
+    }
+}
+
+fn filter_chip(
+    filter: QuickFilter,
+    active_filter: QuickFilter,
+) -> iced::widget::Button<'static, Message> {
+    let button = button(quick_filter_label(filter));
+
+    if filter == active_filter {
+        button.style(gruvbox_button)
+    } else {
+        button.on_press(Message::QuickFilterSelected(filter))
+    }
+}
+
 fn cell_text<'a>(value: impl Into<String>) -> iced::widget::Text<'a> {
     text(value.into()).size(14).wrapping(Wrapping::None)
 }
@@ -721,8 +1009,78 @@ fn kill_button(pid: i32, is_busy: bool) -> iced::widget::Button<'static, Message
     if is_busy || pid <= 0 {
         base
     } else {
-        base.on_press(Message::Kill(pid))
+        base.on_press(Message::KillRequested(pid))
     }
+}
+
+fn confirmation_panel(action: &PendingAction) -> Element<'static, Message> {
+    let details = match action {
+        PendingAction::Single(connection) => format!(
+            "{} ({})  {}  {} -> {}  {}",
+            connection.name,
+            connection.pid,
+            connection.protocol,
+            connection.local_address,
+            connection.foreign_address,
+            if connection.state.is_empty() {
+                "UDP"
+            } else {
+                &connection.state
+            }
+        ),
+        PendingAction::Visible {
+            process_count,
+            connection_count,
+            ..
+        } => format!(
+            "Terminate {process_count} visible process(es) across {connection_count} connection(s)."
+        ),
+    };
+
+    container(
+        row![
+            column![
+                text("Confirm termination").size(16),
+                text(details).size(13).wrapping(Wrapping::None),
+                text("This uses taskkill /F. Run as administrator if Windows denies access.")
+                    .size(12)
+                    .style(|_| iced::widget::text::Style {
+                        color: Some(GB_GRAY),
+                    }),
+            ]
+            .spacing(3)
+            .width(Length::Fill),
+            button("Terminate")
+                .on_press(Message::ConfirmPendingKill)
+                .style(danger_button),
+            button("Cancel").on_press(Message::CancelPendingKill),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .padding([8, 10]),
+    )
+    .style(|_| gruvbox_container(GB_BG0_HARD, Some(GB_FG0), GB_RED))
+    .width(Length::Fill)
+    .into()
+}
+
+fn activity_panel(activity: &[String]) -> Element<'static, Message> {
+    let mut log = column![text("Activity").size(13)].spacing(2);
+
+    for entry in activity.iter().take(3) {
+        log = log.push(
+            text(entry.clone())
+                .size(12)
+                .style(|_| iced::widget::text::Style {
+                    color: Some(GB_GRAY),
+                }),
+        );
+    }
+
+    container(log.padding([6, 10]))
+        .style(|_| gruvbox_container(GB_BG0_SOFT, Some(GB_FG1), GB_BG1))
+        .width(Length::Fill)
+        .into()
 }
 
 fn resize_handle(index: usize) -> Element<'static, Message> {
@@ -854,15 +1212,21 @@ async fn kill_process(pid: i32) -> Result<i32, String> {
     kill_pid(pid).map(|_| pid)
 }
 
-async fn kill_all_processes(pids: Vec<i32>) -> Result<usize, String> {
-    let mut killed = 0;
+async fn kill_all_processes(pids: Vec<i32>) -> KillManyResult {
+    let mut killed_pids = Vec::new();
+    let mut failed = Vec::new();
 
     for pid in pids {
-        kill_pid(pid)?;
-        killed += 1;
+        match kill_pid(pid) {
+            Ok(()) => killed_pids.push(pid),
+            Err(error) => failed.push(format!("{pid}: {error}")),
+        }
     }
 
-    Ok(killed)
+    KillManyResult {
+        killed_pids,
+        failed,
+    }
 }
 
 fn kill_pid(pid: i32) -> Result<(), String> {
@@ -1187,6 +1551,7 @@ const GB_FG1: Color = Color::from_rgb(0.92156863, 0.85882354, 0.69803923);
 const GB_GRAY: Color = Color::from_rgb(0.57254905, 0.5137255, 0.45490196);
 const GB_ORANGE: Color = Color::from_rgb(0.99607843, 0.5019608, 0.09803922);
 const GB_ORANGE_DIM: Color = Color::from_rgb(0.8392157, 0.3647059, 0.05490196);
+const GB_RED: Color = Color::from_rgb(0.8, 0.14117648, 0.11372549);
 
 fn gruvbox_container(
     background: Color,
@@ -1239,6 +1604,36 @@ fn gruvbox_button(
                     GB_BG2
                 }
             },
+        },
+        shadow: Shadow::default(),
+        snap: true,
+    }
+}
+
+fn danger_button(
+    _theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let background = match status {
+        iced::widget::button::Status::Hovered => GB_RED,
+        iced::widget::button::Status::Pressed => Color::from_rgb(0.6313726, 0.12156863, 0.09411765),
+        iced::widget::button::Status::Disabled => GB_BG1,
+        iced::widget::button::Status::Active => GB_BG2,
+    };
+
+    let text_color = match status {
+        iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed => GB_FG0,
+        iced::widget::button::Status::Disabled => GB_GRAY,
+        iced::widget::button::Status::Active => GB_FG1,
+    };
+
+    iced::widget::button::Style {
+        background: Some(Background::Color(background)),
+        text_color,
+        border: Border {
+            radius: 2.0.into(),
+            width: 1.0,
+            color: GB_RED,
         },
         shadow: Shadow::default(),
         snap: true,
